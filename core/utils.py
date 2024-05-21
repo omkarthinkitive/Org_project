@@ -20,7 +20,7 @@ def send_invitation_email(request, invitation):
     query = urlencode({"token": token})
     accept_url = urljoin(origin, f"accept_invite?{query}")
     subject = 'Invitation to join organization'
-    message = render_to_string('invitation_email.html', {'invitation': invitation, 'accept_url':accept_url})
+    message = render_to_string('email/invitation_email.html', {'invitation': invitation, 'accept_url':accept_url})
     plain_message = strip_tags(message)
     sender_email = invitation.invited_by.email
     recipient_email = invitation.invitee.email

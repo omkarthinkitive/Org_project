@@ -1,7 +1,7 @@
 
 from django.contrib import admin
 from django.urls import path, include
-from rest_api.views import AcceptInvitationView
+from core.views import AcceptInvitationView
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
@@ -11,6 +11,7 @@ from rest_framework_simplejwt.views import (
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('',include('rest_api.urls')),
+    path('',include('core.urls')),
     path("accept_invite", AcceptInvitationView.as_view(), name="accpet-invite"),
     path("api/schema/", SpectacularAPIView.as_view(), name="api-schema"),
     path(
