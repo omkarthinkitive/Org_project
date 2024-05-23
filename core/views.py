@@ -4,7 +4,7 @@ import jwt
 from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction
-from core.utils import send_invitation_email
+from core.utils import send_invitation_email, transfer_ownership_to_children
 from core.models import NestedOrganization
 from core.permission import IsOwnerOrAdminOfParentOrganization, IsOwnerToDeleteOrganization
 from .serializers import  AcceptInvitationSerializer, NestedOrganizationSerializer, OrganizationInvitationSerializer, OrganizationOwnerSerializer, OrganizationUserSerializer
@@ -47,9 +47,17 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             serializer = self.serializer_class(data=request.data)
             serializer.is_valid(raise_exception=True)
             serializer.save()
+            parent_org = serializer.validated_data.get("parent_orgnaization")
+            user_id = (
+                self.request.user.id 
+                if not parent_org
+                else OrganizationOwner.objects.filter(
+                    organization=parent_org
+                ).first().organization_user.user_id
+            )
 
             org_user = OrganizationUser.objects.create(
-                user_id=self.request.user.id,
+                user_id=user_id,
                 organization_id=serializer.data["id"],
             )
             org_owner = OrganizationOwner.objects.create(
@@ -61,6 +69,25 @@ class OrganizationViewSet(viewsets.ModelViewSet):
     def retrieve(self, request, pk=None):
         org_instance = self.get_object()
         serializer = self.get_serializer(org_instance)
+        return Response(serializer.data)
+    
+    def partial_update(self, *args, **kwargs):
+        with transaction.atomic():
+            org_instance = self.get_object()
+            serializer = self.serializer_class(data=self.request.data, instance=org_instance, partial=True)
+            serializer.is_valid(raise_exception=True)
+            
+            parent = serializer.validated_data.get("parent_organization")
+            if parent and parent != org_instance.parent_organization:
+                new_owner_user_id = OrganizationOwner.objects.filter(organization=parent).first().organization_user.user_id
+                org_owner = OrganizationOwner.objects.get(organization=org_instance)
+                org_owner.organization_user_id = new_owner_user_id
+                org_owner.save()
+                
+                transfer_ownership_to_children(org_instance, new_owner_user_id)
+            
+            serializer.save()
+            
         return Response(serializer.data)
     
     @action(detail=True, methods=["GET", "POST"], url_path="invitations")
