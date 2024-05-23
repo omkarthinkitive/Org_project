@@ -1,20 +1,26 @@
 version: '3'
 
 services:
-  web:
+  django: &django
     build:
       context: .
-      dockerfile: ./compose/local/django/Dockerfile  # Path to your Dockerfile
-    command: python manage.py runserver 0.0.0.0:8000
-    volumes:
-      - .:/code
-    ports:
-      - "8000:8000"
+      dockerfile: ./compose/local/django/Dockerfile
+    image: drf_local_django
+    container_name: drf_local_django
     depends_on:
       - mailhog
+    ports:
+      - "0.0.0.0:8000:8000"
+    volumes:
+      - .:/app
     command: /start
+      
   mailhog:
     image: mailhog/mailhog
     ports:
       - "1025:1025"
       - "8025:8025"
+
+
+
+

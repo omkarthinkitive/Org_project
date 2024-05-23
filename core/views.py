@@ -1,52 +1,67 @@
 
-import json
 from django.conf import settings
-from django.http import HttpRequest, HttpResponse
 import jwt
-from rest_framework.decorators import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction
 from core.utils import send_invitation_email
-from .serializers import  OrganizationInvitationSerializer
+from core.models import NestedOrganization
+from core.permission import IsOwnerOrAdminOfParentOrganization, IsOwnerToDeleteOrganization
+from .serializers import  AcceptInvitationSerializer, NestedOrganizationSerializer, OrganizationInvitationSerializer, OrganizationOwnerSerializer, OrganizationUserSerializer
 from rest_framework import viewsets
-from organizations.models import Organization, OrganizationUser, OrganizationOwner, OrganizationInvitation
-from core.serializers import OrganizationSerializer
+from organizations.models import OrganizationUser, OrganizationOwner, OrganizationInvitation
 from rest_framework.decorators import action
 from rest_framework.permissions import  AllowAny
-from drf_spectacular.utils import OpenApiParameter, extend_schema
+from rest_framework.permissions import BasePermission
 
-    
+  
 class OrganizationViewSet(viewsets.ModelViewSet):
     
-    queryset = Organization.objects.all()
-    serializer_class = OrganizationSerializer
+    queryset = NestedOrganization.objects.all()
+    serializer_class = NestedOrganizationSerializer
     
     def get_serializer_class(self):
         if self.action == "organization_invitations":
             return OrganizationInvitationSerializer
+        if self.action == "accept_invite":
+            return AcceptInvitationSerializer
         return super().get_serializer_class()
-
     
+    def get_permissions(self):
+        permission_classes = []
+        if self.action in ['create', 'partial_update', 'update', 'organization_invitations']:
+            permission_classes = [IsOwnerOrAdminOfParentOrganization]
+        if self.action == "destroy":
+            permission_classes = [IsOwnerToDeleteOrganization]
+        if self.action == "accept_invite":
+            permission_classes = [AllowAny]
+        return [permission() for permission in permission_classes]
+
     def get_queryset(self, *args, **kwargs):
         user = self.request.user
         organization_ids = OrganizationUser.objects.filter(user=user).values_list('organization', flat=True)
-        return Organization.objects.filter(id__in=organization_ids)
+        return NestedOrganization.objects.filter(id__in=organization_ids)
 
     def create(self, request):
-        serializer = self.serializer_class(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
+        with transaction.atomic():
+            serializer = self.serializer_class(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
 
-        org_user = OrganizationUser.objects.create(
-            user_id=self.request.user.id,
-            organization_id=serializer.data["id"],
-        )
-        org_owner = OrganizationOwner.objects.create(
-            organization_user_id=org_user.id, organization_id=serializer.data["id"]
-        )
-        org_owner.save()
+            org_user = OrganizationUser.objects.create(
+                user_id=self.request.user.id,
+                organization_id=serializer.data["id"],
+            )
+            org_owner = OrganizationOwner.objects.create(
+                organization_user_id=org_user.id, organization_id=serializer.data["id"]
+            )
+            org_owner.save()
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    def retrieve(self, request, pk=None):
+        org_instance = self.get_object()
+        serializer = self.get_serializer(org_instance)
+        return Response(serializer.data)
     
     @action(detail=True, methods=["GET", "POST"], url_path="invitations")
     def organization_invitations(self, request, pk):
@@ -71,39 +86,40 @@ class OrganizationViewSet(viewsets.ModelViewSet):
 
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         
-class AcceptInvitationView(APIView):
-    permission_classes = [AllowAny]
+    @action(detail=False, methods=["POST"], url_path="accept_invite", permission_classes=[AllowAny])
+    def accept_invite(self, request):
+        serializer = AcceptInvitationSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    @extend_schema(
-        parameters=[
-            OpenApiParameter(name="token", type=str, location="query"),
-        ],
-    )
-    def get(self, request: HttpRequest):
-        token = request.GET.get("token")
+        token = serializer.validated_data['token']
 
         try:
             data = jwt.decode(
                 token, settings.SECRET_KEY, algorithms=["HS256"], verify=True
             )
         except (jwt.DecodeError, jwt.ExpiredSignatureError) as e:
-            return HttpResponse(
-                json.dumps({"detail": "Invalid invite url", "error": str(e)})
+            return Response(
+                {"detail": "Invalid invite URL", "error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST
             )
+
         with transaction.atomic():
-            invitation_id= data.get('invitation_id', None)
-            user_id= data.get('user_id', None)
-            org_id= data.get('org_id', None)
+            invitation_id = data.get('invitation_id')
+            user_id = data.get('user_id')
+            org_id = data.get('org_id')
             invite = OrganizationInvitation.objects.filter(id=invitation_id, invitee_id=user_id, organization_id=org_id).first()
+
             if not invite:
-                return HttpResponse(
-                    json.dumps({"detail": "Invalid invite url", "error": str(e)})
+                return Response(
+                    {"detail": "Invalid invite URL", "error": "Invitation not found"},
+                    status=status.HTTP_400_BAD_REQUEST
                 )
-                
+
             if OrganizationUser.objects.filter(user_id=user_id, organization_id=org_id).exists():
-                return HttpResponse(
-                    json.dumps({"detail": "User is already a member of the organization"}),
-                    status=400
+                return Response(
+                    {"detail": "User is already a member of the organization"},
+                    status=status.HTTP_400_BAD_REQUEST
                 )
 
             OrganizationUser.objects.create(
@@ -112,5 +128,77 @@ class AcceptInvitationView(APIView):
             )
 
             invite.delete()
-            return HttpResponse("Invitation successfully accepted", status=200)
+            return Response({"detail": "Invitation successfully accepted"}, status=status.HTTP_200_OK)
+
+
+class OrganizationOwnerViewSet(viewsets.ModelViewSet):
+    queryset = OrganizationOwner.objects.all()
+    serializer_class = OrganizationOwnerSerializer
+    lookup_field = "id"
+    
+    def get_queryset(self, *args, **kwargs):
+        organization_owner = OrganizationOwner.objects.filter(organization_id = self.kwargs["id"])
+        return organization_owner
+    
+class OrganizationUserViewSet(viewsets.ModelViewSet):
+    queryset = OrganizationUser.objects.all()
+    serializer_class = OrganizationUserSerializer
+    
+    def get_queryset(self, *args, **kwargs):
+        organization_user = OrganizationUser.objects.filter(organization_id = self.kwargs["id"])
+        return organization_user
+    
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        organization_id = request.data.get('organization_id')
+        user_id = request.data.get('user_id')
+        if not organization_id:
+            return Response({'error': 'Organization ID is required.'}, status=status.HTTP_400_BAD_REQUEST)
         
+        if not user_id:
+            return Response({'error': 'User ID is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if OrganizationUser.objects.filter(organization_id=organization_id, user_id=user_id).exists():
+            return Response({'error': 'User already exists in this organization.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+class DetailUserViewSet(viewsets.ModelViewSet):
+    queryset = OrganizationUser.objects.all()
+    serializer_class = OrganizationUserSerializer
+    
+    def retrieve(self, request, organization_id=None, user_id=None):
+        try:
+            organization_user = OrganizationUser.objects.get(organization_id=organization_id, user_id=user_id)
+        except OrganizationUser.DoesNotExist:
+            return Response({'error': 'User not found in this organization.'}, status=status.HTTP_404_NOT_FOUND)
+        
+        serializer = OrganizationUserSerializer(organization_user)
+        return Response(serializer.data)
+    
+    def update(self, request, organization_id=None, user_id=None):
+        try:
+            organization_user = OrganizationUser.objects.get(organization_id=organization_id, user_id=user_id)
+        except OrganizationUser.DoesNotExist:
+            return Response({'error': 'User not found in this organization.'}, status=status.HTTP_404_NOT_FOUND)
+        
+        serializer = OrganizationUserSerializer(organization_user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    def destroy(self, request, organization_id=None, user_id=None):
+        try:
+            organization_user = OrganizationUser.objects.get(organization_id=organization_id, user_id=user_id)
+        except OrganizationUser.DoesNotExist:
+            return Response({'error': 'User not found in this organization.'}, status=status.HTTP_404_NOT_FOUND)
+        
+        organization_user.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['patch'])
+    def partial_update(self, request, organization_id=None, user_id=None):
+        return self.update(request, organization_id=organization_id, user_id=user_id)

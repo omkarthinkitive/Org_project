@@ -4,6 +4,7 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
+python manage.py migrate --verbosity 3
 
-python manage.py migrate
-exec uvicorn config.asgi:application --host 0.0.0.0 --reload --reload-include '*.html'
+python manage.py collectstatic --noinput
+exec uvicorn drf.asgi:application --host 0.0.0.0 --reload --reload-include '*.html'
