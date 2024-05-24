@@ -4,16 +4,30 @@ import jwt
 from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction
-from core.utils import send_invitation_email, transfer_ownership_to_children
+from core.utils import send_invitation_email, update_organization_owner
 from core.models import NestedOrganization
-from core.permission import IsOwnerOrAdminOfParentOrganization, IsOwnerToDeleteOrganization
-from .serializers import  AcceptInvitationSerializer, NestedOrganizationSerializer, OrganizationInvitationSerializer, OrganizationOwnerSerializer, OrganizationUserSerializer
+from core.permission import (
+    IsOrganizationCreateAllowed, 
+    IsOrganizationOwner, 
+    IsOrganizationOwnerOrAdmin, 
+    IsOrganizationUser
+)
+from .serializers import  (
+    AcceptInvitationSerializer, 
+    NestedOrganizationSerializer, 
+    OrganizationInvitationSerializer, 
+    OrganizationOwnerSerializer, 
+    OrganizationUserSerializer
+)
 from rest_framework import viewsets
-from organizations.models import OrganizationUser, OrganizationOwner, OrganizationInvitation
+from organizations.models import (
+    OrganizationUser, 
+    OrganizationOwner, 
+    OrganizationInvitation
+)
 from rest_framework.decorators import action
 from rest_framework.permissions import  AllowAny
-from rest_framework.permissions import BasePermission
-
+from django.shortcuts import render
   
 class OrganizationViewSet(viewsets.ModelViewSet):
     
@@ -29,12 +43,16 @@ class OrganizationViewSet(viewsets.ModelViewSet):
     
     def get_permissions(self):
         permission_classes = []
-        if self.action in ['create', 'partial_update', 'update', 'organization_invitations']:
-            permission_classes = [IsOwnerOrAdminOfParentOrganization]
-        if self.action == "destroy":
-            permission_classes = [IsOwnerToDeleteOrganization]
-        if self.action == "accept_invite":
-            permission_classes = [AllowAny]
+        if self.action == 'create':
+            permission_classes = [IsOrganizationCreateAllowed]
+        elif self.action == "accept-invite":
+            permission_classes=[AllowAny]
+        elif self.action in ["retrieve", "questions"]:
+            permission_classes = [IsOrganizationUser]
+        elif self.action in ["partial_update", "update", "organization_invitations"]:
+            permission_classes = [IsOrganizationOwnerOrAdmin]
+        elif self.action in ["destroy"]:
+            permission_classes = [IsOrganizationOwner]
         return [permission() for permission in permission_classes]
 
     def get_queryset(self, *args, **kwargs):
@@ -67,27 +85,26 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     def retrieve(self, request, pk=None):
-        org_instance = self.get_object()
-        serializer = self.get_serializer(org_instance)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
         return Response(serializer.data)
     
     def partial_update(self, *args, **kwargs):
         with transaction.atomic():
-            org_instance = self.get_object()
-            serializer = self.serializer_class(data=self.request.data, instance=org_instance, partial=True)
+            instance = self.get_object()
+            serializer = self.serializer_class(data=self.request.data, instance=instance, partial=True)
             serializer.is_valid(raise_exception=True)
-            
             parent = serializer.validated_data.get("parent_organization")
-            if parent and parent != org_instance.parent_organization:
-                new_owner_user_id = OrganizationOwner.objects.filter(organization=parent).first().organization_user.user_id
-                org_owner = OrganizationOwner.objects.get(organization=org_instance)
-                org_owner.organization_user_id = new_owner_user_id
-                org_owner.save()
-                
-                transfer_ownership_to_children(org_instance, new_owner_user_id)
-            
+            if parent and parent != instance.parent:
+                old_user_id = OrganizationOwner.objects.filter(
+                    organization=instance
+                ).first().organization_user.user_id
+                new_user_id =  OrganizationOwner.objects.filter(
+                    organization=parent
+                ).first().organization_user.user_id
+                if old_user_id != new_user_id:
+                    update_organization_owner(instance, new_user_id)
             serializer.save()
-            
         return Response(serializer.data)
     
     @action(detail=True, methods=["GET", "POST"], url_path="invitations")
@@ -192,22 +209,23 @@ class OrganizationUserViewSet(viewsets.ModelViewSet):
         serializer.save()
         return Response(serializer.data, status=status.HTTP_201_CREATED)
     
+    
 class DetailUserViewSet(viewsets.ModelViewSet):
     queryset = OrganizationUser.objects.all()
     serializer_class = OrganizationUserSerializer
     
-    def retrieve(self, request, organization_id=None, user_id=None):
+    def retrieve(self, request,  *args, **kwargs):
         try:
-            organization_user = OrganizationUser.objects.get(organization_id=organization_id, user_id=user_id)
+            organization_user = OrganizationUser.objects.get(organization_id=self.kwargs["id"], user_id=self.kwargs["uid"])
         except OrganizationUser.DoesNotExist:
             return Response({'error': 'User not found in this organization.'}, status=status.HTTP_404_NOT_FOUND)
         
         serializer = OrganizationUserSerializer(organization_user)
         return Response(serializer.data)
     
-    def update(self, request, organization_id=None, user_id=None):
+    def update(self, request, *args, **kwargs):
         try:
-            organization_user = OrganizationUser.objects.get(organization_id=organization_id, user_id=user_id)
+            organization_user = OrganizationUser.objects.get(organization_id=self.kwargs["id"], user_id=self.kwargs["uid"])
         except OrganizationUser.DoesNotExist:
             return Response({'error': 'User not found in this organization.'}, status=status.HTTP_404_NOT_FOUND)
         
@@ -217,9 +235,9 @@ class DetailUserViewSet(viewsets.ModelViewSet):
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
-    def destroy(self, request, organization_id=None, user_id=None):
+    def destroy(self, request, *args, **kwargs):
         try:
-            organization_user = OrganizationUser.objects.get(organization_id=organization_id, user_id=user_id)
+            organization_user = OrganizationUser.objects.get(organization_id=self.kwargs["id"], user_id=self.kwargs["uid"])
         except OrganizationUser.DoesNotExist:
             return Response({'error': 'User not found in this organization.'}, status=status.HTTP_404_NOT_FOUND)
         
@@ -227,5 +245,5 @@ class DetailUserViewSet(viewsets.ModelViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['patch'])
-    def partial_update(self, request, organization_id=None, user_id=None):
-        return self.update(request, organization_id=organization_id, user_id=user_id)
+    def partial_update(self, request, *args, **kwargs):
+        return self.update(request, organization_id=self.kwargs["id"], user_id=self.kwargs["uid"])

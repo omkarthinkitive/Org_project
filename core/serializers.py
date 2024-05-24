@@ -20,7 +20,7 @@ class NestedOrganizationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = NestedOrganization
-        fields = '__all__'
+        exclude =('created', 'modified', 'slug')  
     
         
     def to_representation(self, instance):

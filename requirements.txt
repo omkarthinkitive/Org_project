@@ -39,3 +39,4 @@ uritemplate==4.1.1
 urllib3==2.2.1
 uvicorn[standard]==0.21.1  # https://github.com/encode/uv
 django-debug-toolbar==3.8.1  # https://github.com/jazzband/django-debug-toolbar
+pre-commit==2.20.0  # https://github.com/pre-commit/pre-commit

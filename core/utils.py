@@ -4,7 +4,7 @@ from django.utils.html import strip_tags
 from django.conf import settings
 import jwt
 from urllib.parse import urljoin
-from organizations.models import OrganizationOwner
+from organizations.models import OrganizationOwner, OrganizationUser
 
 def send_invitation_email(request, invitation):
     token = jwt.encode(
@@ -32,12 +32,16 @@ def send_invitation_email(request, invitation):
     send_mail(subject, plain_message, sender_email, [recipient_email], html_message=message)
 
 
-def transfer_ownership_to_children(self, org_instance, new_owner_user_id):
-    def transfer_ownership_recursive(org, new_owner_user_id):
-        org_owner = OrganizationOwner.objects.get(organization=org)
-        org_owner.organization_user_id = new_owner_user_id
-        org_owner.save()
-        for child_org in org.children.all():
-            transfer_ownership_recursive(child_org, new_owner_user_id)
-    
-    transfer_ownership_recursive(org_instance, new_owner_user_id)
+def update_organization_owner(org_instance, new_user_id):
+    new_org_user = OrganizationUser.objects.create(
+        user_id=new_user_id,
+        organization_id=org_instance.id,
+    )
+    owner = OrganizationOwner.objects.filter(
+        organization=org_instance
+    ).first()
+    owner.organization_user_id=new_org_user.id
+    owner.save()
+    child_orgs = org_instance.children.all()
+    for child in child_orgs:
+        update_organization_owner(child, new_user_id)

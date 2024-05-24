@@ -2,10 +2,7 @@ from drf import settings
 from django.contrib import admin
 from django.urls import path, include
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
-    TokenRefreshView,
-)
+
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 
 urlpatterns = [

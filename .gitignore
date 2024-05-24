@@ -277,3 +277,4 @@ ecaremd/media/
 .envs/*
 !.envs/.production/
 !.envs/.local_example/
+db.sqlite3
